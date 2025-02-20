@@ -1,79 +1,58 @@
-import pyaudio
-import numpy as np
 from faster_whisper import WhisperModel
-import threading
-import queue
+from transformers import MarianMTModel, MarianTokenizer
+import soundcard as sc 
+import soundfile as sf 
 
-# Audio configuration
-FORMAT = pyaudio.paInt16  # 16-bit audio format
-CHANNELS = 1  # Mono audio
-RATE = 16000  # Sample rate (Whisper expects 16kHz)
-CHUNK = 1024  # Number of frames per buffer
-RECORD_SECONDS = 5  # Duration of each transcription chunk (can be adjusted)
+output_file_name = "AudioCaptured.wav"
+samplerate = 16000 #need to be 16k cuz the whisper asked it to be 16khz
+model_size = "small"
+record_sec = 3
+model_name ='Helsinki-NLP/opus-mt-ja-en'
 
-# Whisper model configuration
-model_size = "small"  # You can choose "tiny", "base", "small", "medium", "large"
-model = WhisperModel(model_size, device="cuda", compute_type="float16")  # Use GPU
+model_translator = MarianMTModel.from_pretrained(model_name)
+tokenizer = MarianTokenizer.from_pretrained(model_name)
 
-# Queue to hold audio chunks for transcription
-audio_queue = queue.Queue()
+def translate_text(input_text):
+    input_ids = tokenizer.encode(input_text, return_tensors = 'pt', padding = True, truncation = True)
 
-# Function to capture audio from the microphone
-def capture_audio():
-    audio = pyaudio.PyAudio()
-    stream = audio.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=RATE,
-        input=True,
-        frames_per_buffer=CHUNK,
+    translation_ids = model_translator.generate(
+        input_ids,
+        max_length = 100,
+        num_beams = 5,
+        length_penalty = 1.0,
+        no_repeat_ngram_size = 5,
+        top_k = 50,
+        top_p = 0.95,
+        early_stopping = False,
+        do_sample = True
     )
-    print("Recording... Press Ctrl+C to stop.")
 
-    try:
-        while True:
-            # Read audio data from the stream
-            data = stream.read(CHUNK)
-            # Convert raw audio data to numpy array
-            audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-            # Put the audio data into the queue
-            audio_queue.put(audio_data)
-    except KeyboardInterrupt:
-        print("Stopping recording.")
-    finally:
-        # Clean up
-        stream.stop_stream()
-        stream.close()
-        audio.terminate()
+    translated_text = tokenizer.decode(translation_ids[0], skip_special_tokens = True)
 
-# Function to transcribe audio chunks
-def transcribe_audio():
+    return translated_text
+
+
+# Run on GPU with FP16
+model = WhisperModel(model_size, device="cuda", compute_type="float16")
+accumulated_Transcription = " "
+
+try:
+    print("Starting...")
     while True:
-        # Get audio data from the queue
-        audio_data = audio_queue.get()
-        if audio_data is None:  # Sentinel value to stop the thread
-            break
 
-        # Transcribe the audio chunk
-        segments, info = model.transcribe(audio_data, beam_size=5)
+        with sc.get_microphone(id=str(sc.default_speaker().name), include_loopback= True).recorder(samplerate=samplerate) as mic:
+            data = mic.record(numframes=samplerate*record_sec)
+            segments, info = model.transcribe(data[:,0], beam_size=5)
 
-        # Print the transcription
-        for segment in segments:
-            print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+            for segment in segments:
+                # print(segment.text)
+                translated_text = translate_text(segment.text)
+                print(translated_text)
+                accumulated_Transcription += translated_text + "\n"
 
-# Main function
-def main():
-    # Start the audio capture thread
-    capture_thread = threading.Thread(target=capture_audio)
-    capture_thread.start()
+except KeyboardInterrupt:
 
-    # Start the transcription thread
-    transcribe_thread = threading.Thread(target=transcribe_audio)
-    transcribe_thread.start()
+    print("Stopping...")
 
-    # Wait for threads to finish (Ctrl+C to stop)
-    capture_thread.join()
-    transcribe_thread.join()
-
-if __name__ == "__main__":
-    main()
+    with open("log.txt", "w") as log_file:
+        log_file.write(accumulated_Transcription)
