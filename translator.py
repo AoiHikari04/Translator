@@ -6,7 +6,7 @@ import soundfile as sf
 output_file_name = "AudioCaptured.wav"
 samplerate = 16000 #need to be 16k cuz the whisper asked it to be 16khz
 model_size = "small"
-record_sec = 3
+record_sec = 5
 model_name ='Helsinki-NLP/opus-mt-ja-en'
 
 model_translator = MarianMTModel.from_pretrained(model_name)
